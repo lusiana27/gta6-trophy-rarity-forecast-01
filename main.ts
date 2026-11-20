@@ -28,8 +28,9 @@
 // refreshes, shrunk toward the launch-night prior when the history is too
 // thin to identify them). When the history is flat — no refresh yet seen —
 // it falls back to the launch prior: newcomers play about 7% of the
-// incumbents' hours, and the player count roughly triples over a 90-minute
-// horizon at launch surge.
+// incumbents' hours, and the player count roughly sixfolds over a 90-minute
+// horizon at launch surge (the first refresh the house recorded took it
+// 638 -> 3,868).
 //
 // The spreads are deliberately asymmetric. The player count can only grow,
 // never shrink, so the downside (rates fall further than the median) is far
@@ -59,10 +60,13 @@ const Z = [-1.645, -0.674, 0, 0.674, 1.645];
 const RHO_PRIOR = 0.07;
 /** Prior for the incumbents' progression rate per log hour. */
 const GAMMA_PRIOR = 0.15;
-/** Prior median player-count multiplier over a 90-minute horizon at launch. */
-const GROWTH_PRIOR_BASE = 2.5;
-/** Log-uncertainty of the player count when the history shows no growth. */
-const LOGP_SIGMA_FLAT = 0.7;
+/** Prior median player-count multiplier over a 90-minute horizon at launch:
+ *  the first refresh the house recorded took the count 638 -> 3,868 (about
+ *  sixfold), so a flat history is expected to grow about sixfold, not threefold. */
+const GROWTH_PRIOR_BASE = 5.0;
+/** Log-uncertainty of the player count when the history shows no growth:
+ *  wide, because a flat history hides the next refresh's size entirely. */
+const LOGP_SIGMA_FLAT = 1.0;
 /** Log-uncertainty of the player count when the history fits a growth law. */
 const LOGP_SIGMA_FIT = 0.45;
 
@@ -233,8 +237,8 @@ function forecastTrophy(
   const lMed = at(playersTarget);
   const sens = Math.abs(at(playersTarget * 1.01) - at(playersTarget * 0.99)) / 0.02;
   const base = 0.25 * Math.sqrt(horizonDays);
-  const sDown = Math.min(2, Math.max(0.3, Math.sqrt((sens * logSigmaP) ** 2 + fit.resid ** 2 + 0.25 ** 2 + base ** 2)));
-  const sUp = Math.min(2, Math.max(0.3, Math.sqrt((0.5 * sens * logSigmaP) ** 2 + fit.resid ** 2 + 0.25 ** 2 + base ** 2)));
+  const sDown = Math.min(2.5, Math.max(0.5, Math.sqrt((sens * logSigmaP) ** 2 + fit.resid ** 2 + 0.35 ** 2 + base ** 2)));
+  const sUp = Math.min(2.5, Math.max(0.5, Math.sqrt((0.5 * sens * logSigmaP) ** 2 + fit.resid ** 2 + 0.35 ** 2 + base ** 2)));
   const q = Z.map((z) => {
     const s = z < 0 ? sDown : z > 0 ? sUp : 0;
     return round4(fromLogit(lMed + z * s));
@@ -243,7 +247,17 @@ function forecastTrophy(
   return q;
 }
 
-function forecastCase(c: CaseFile): { id: string; trophies: Array<{ id: number; q: number[] }> } {
+/** Clamp every quantile into [0, 100], replace a non-finite value with the
+ *  row's median, and keep the row non-decreasing, so the output is valid
+ *  whatever the fit produced. */
+function sanitize(q: number[]): number[] {
+  const med = Number.isFinite(q[2]) ? (q[2] as number) : 0.01;
+  const clean = q.map((v) => (Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : med));
+  for (let i = 1; i < clean.length; i++) clean[i] = Math.max(clean[i] as number, clean[i - 1] as number);
+  return clean;
+}
+
+function forecastCase(c: CaseFile): { trophies: Array<{ id: number; q: number[] }> } {
   if (c.levels.length !== LEVELS.length || c.levels.some((t, j) => t !== LEVELS[j])) {
     throw new Error(`${c.id} asks for levels ${JSON.stringify(c.levels)}, not ${JSON.stringify(LEVELS)}`);
   }
@@ -268,10 +282,10 @@ function forecastCase(c: CaseFile): { id: string; trophies: Array<{ id: number; 
     }
     return {
       id: t.id,
-      q: forecastTrophy(rate, last.players, players.value, players.logSigma, fit, growth, horizonDays),
+      q: sanitize(forecastTrophy(rate, last.players, players.value, players.logSigma, fit, growth, horizonDays)),
     };
   });
-  return { id: c.id, trophies };
+  return { trophies };
 }
 
 mkdirSync(OUTPUT_DIR, { recursive: true });
